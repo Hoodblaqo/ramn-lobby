@@ -22,6 +22,40 @@ class CommandRequest(BaseModel):
     command: str = Field(min_length=1, max_length=255)
     args: str | None = Field(default=None, max_length=1000)
 
+class SocialRequest(BaseModel):
+    token: str = Field(min_length=8, max_length=4096)
+    bot_id: str = Field(min_length=1, max_length=128)
+
+@app.post("/api/social")
+async def get_social_lists(payload: SocialRequest):
+    token = payload.token.strip()
+    bot_id = payload.bot_id.strip()
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    base = f"https://api.fnlb.net/v1/bots/{quote(bot_id, safe='')}"
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
+            friends_response, pending_response = await __import__("asyncio").gather(
+                client.get(base + "/friends", headers=headers),
+                client.get(base + "/pending", headers=headers),
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="FNLB took too long to load friends.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Could not reach FNLB social endpoints.")
+    def unpack(response, label):
+        if response.status_code >= 400:
+            try:
+                body = response.json(); errs = body.get("errors", []) if isinstance(body, dict) else []
+                detail = errs[0].get("message") if errs and isinstance(errs[0], dict) else None
+            except ValueError:
+                detail = None
+            raise HTTPException(status_code=response.status_code, detail=detail or f"FNLB could not load {label} (HTTP {response.status_code}).")
+        try:
+            return response.json()
+        except ValueError:
+            raise HTTPException(status_code=502, detail=f"FNLB returned invalid {label} data.")
+    return {"friends": unpack(friends_response, "friends"), "pending": unpack(pending_response, "pending")}
+
 @app.get("/")
 async def home():
     return FileResponse("index.html")
