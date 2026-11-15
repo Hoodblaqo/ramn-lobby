@@ -18,50 +18,40 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-
       - name: Install dependencies
-        run: npm ci
-
+        run: npm install --no-audit --no-fund
       - name: Resolve the selected bot ID
         id: resolve
         env:
           API_TOKEN: ${{ secrets.FNLB_API_TOKEN }}
-          BOT_NICKNAME: ramn-_-
+          BOT_NICKNAME: ramn-_- 
         run: |
           node --input-type=module <<'NODE'
           const token = process.env.API_TOKEN?.trim();
           if (!token) throw new Error('Missing repository secret FNLB_API_TOKEN.');
-          const response = await fetch('https://api.fnlb.net/v1/bots', {
-            headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
-          });
+          const response = await fetch('https://api.fnlb.net/v1/bots', { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
           if (!response.ok) throw new Error(`FNLB bot list failed: HTTP ${response.status}`);
           let data = await response.json();
           for (let i = 0; i < 4 && !Array.isArray(data); i++) {
             if (!data || typeof data !== 'object') break;
             const next = data.bots ?? data.data ?? data.items ?? data.results;
-            if (next === data) break;
+            if (next === data || next == null) break;
             data = next;
           }
           if (!Array.isArray(data)) throw new Error('FNLB returned an unsupported bot-list format.');
           const wanted = process.env.BOT_NICKNAME.trim().toLowerCase();
-          const matches = data.filter(bot =>
-            String(bot?.nickname ?? bot?.name ?? '').trim().toLowerCase() === wanted
-          );
-          if (matches.length !== 1) {
-            throw new Error(`Expected exactly one bot named "${process.env.BOT_NICKNAME}", found ${matches.length}. No bot was started.`);
-          }
+          const matches = data.filter(bot => String(bot?.nickname ?? bot?.name ?? '').trim().toLowerCase() === wanted);
+          if (matches.length !== 1) throw new Error(`Expected exactly one bot named ${wanted}; found ${matches.length}. No bot was started.`);
           const id = matches[0].id ?? matches[0].botId ?? matches[0].bot_id;
           if (!id) throw new Error('The matching bot did not contain an ID.');
           const { appendFileSync } = await import('node:fs');
-          appendFileSync(process.env.GITHUB_OUTPUT, `bot_id=${String(id).replace(/[\r\n]/g, '')}\n`);
-          console.log(`Resolved the selected bot: ${process.env.BOT_NICKNAME}`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `bot_id=${String(id).replace(/[\\r\\n]/g, '')}\\n`);
+          console.log(`Resolved selected bot: ${wanted}`);
           NODE
-
       - name: Run bot until stopped or session limit
         env:
           API_TOKEN: ${{ secrets.FNLB_API_TOKEN }}
