@@ -67,37 +67,74 @@ async def list_bots(payload: ConnectRequest):
         raise HTTPException(status_code=400, detail="Enter your FNLB API token.")
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
-            response = await client.get("https://api.fnlb.net/v1/bots", headers=headers)
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+            bots_response, user_response = await __import__("asyncio").gather(
+                client.get("https://api.fnlb.net/v1/bots", headers=headers),
+                client.get("https://api.fnlb.net/v1/user", headers=headers),
+            )
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="FNLB took too long to respond. Try again.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Could not reach FNLB. Try again in a moment.")
-    if response.status_code in (400, 401, 403, 429):
+
+    def read_json(response, label):
         try:
-            err = response.json()
-            errors = err.get("errors", []) if isinstance(err, dict) else []
-            detail = errors[0].get("message") if errors and isinstance(errors[0], dict) else None
+            return response.json()
         except ValueError:
-            detail = None
-        if not detail:
-            detail = {400: "FNLB rejected the request.", 401: "FNLB rejected this API token.", 403: "This token does not have permission to list bots.", 429: "FNLB rate limit reached. Wait a moment and try again."}[response.status_code]
-        raise HTTPException(status_code=response.status_code, detail=detail)
-    if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"FNLB returned HTTP {response.status_code}.")
-    try:
-        data: Any = response.json()
-    except ValueError:
-        raise HTTPException(status_code=502, detail="FNLB returned an unexpected response.")
-    if isinstance(data, dict) and isinstance(data.get("bots"), list):
-        data = data["bots"]
+            raise HTTPException(status_code=502, detail=f"FNLB returned an unreadable {label} response.")
+
+    data = read_json(bots_response, "bot list")
+    if bots_response.status_code >= 400:
+        errors = data.get("errors", []) if isinstance(data, dict) else []
+        first = errors[0] if errors and isinstance(errors[0], dict) else {}
+        detail = first.get("message") or f"FNLB bot-list request failed (HTTP {bots_response.status_code})."
+        code = first.get("errorCode")
+        if code:
+            detail += f" ({code})"
+        raise HTTPException(status_code=bots_response.status_code, detail=detail)
+
+    account = {}
+    if user_response.status_code < 400:
+        user_data = read_json(user_response, "account")
+        if isinstance(user_data, dict) and isinstance(user_data.get("user"), dict):
+            user_data = user_data["user"]
+        if isinstance(user_data, dict):
+            account = {"id": str(user_data.get("id") or user_data.get("userId") or ""),
+                       "username": str(user_data.get("username") or user_data.get("name") or "")}
+
+    # FNLB documents a JSON array; also accept common API envelope variants safely.
+    for _ in range(3):
+        if isinstance(data, list):
+            break
+        if not isinstance(data, dict):
+            break
+        next_data = None
+        for key in ("bots", "data", "items", "results"):
+            value = data.get(key)
+            if isinstance(value, (list, dict)):
+                next_data = value
+                break
+        if next_data is None or next_data is data:
+            break
+        data = next_data
+    if isinstance(data, dict):
+        for key in ("bots", "items", "results"):
+            if isinstance(data.get(key), list):
+                data = data[key]
+                break
     if not isinstance(data, list):
-        raise HTTPException(status_code=502, detail="FNLB returned an unexpected bot-list format.")
+        shape = ", ".join(list(data.keys())[:8]) if isinstance(data, dict) else type(data).__name__
+        raise HTTPException(status_code=502, detail=f"FNLB returned an unsupported bot-list format ({shape}).")
+
     bots = []
     for item in data:
-        if isinstance(item, dict):
-            bots.append({"id": str(item.get("id", "")), "nickname": str(item.get("nickname") or "Unnamed bot")})
-    return {"bots": bots}
+        if not isinstance(item, dict):
+            continue
+        bot_id = item.get("id") or item.get("botId") or item.get("bot_id")
+        if not bot_id:
+            continue
+        bots.append({"id": str(bot_id), "nickname": str(item.get("nickname") or item.get("name") or "Unnamed bot")})
+    return {"bots": bots, "account": account}
 
 @app.post("/api/command")
 async def run_bot_command(payload: CommandRequest):
