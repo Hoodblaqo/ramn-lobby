@@ -1,49 +1,64 @@
 import 'dotenv/config';
 import FNLB from 'fnlb';
 
+const token = process.env.API_TOKEN?.trim();
+const botIds = (process.env.BOTS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+// Fail closed: never accidentally launch the entire FNLB bot pool.
+if (!token) {
+  throw new Error('Missing API_TOKEN. Add your FNLB API token in Render environment variables.');
+}
+if (botIds.length === 0) {
+  throw new Error('Missing BOTS. Add the exact FNLB bot ID for ramn-_- in Render environment variables. No bots were started.');
+}
+
 const fnlb = new FNLB({
-	clusterName: process.env.CLUSTER_NAME || 'Self Hosted Cluster'
+  clusterName: process.env.CLUSTER_NAME || 'RAMN Lobby'
 });
 
 const releaseChannel = process.env.RELEASE_CHANNEL === 'beta' ? 'beta' : 'stable';
-
-const parseListEnv = (value) => {
-	if (value === undefined) return undefined;
-	const items = value
-		.split(',')
-		.map((v) => v.trim())
-		.filter((v) => v.length > 0);
-	return items.length > 0 ? items : undefined;
-};
+const numberOfShards = Math.max(1, Number.parseInt(process.env.NUMBER_OF_SHARDS || '1', 10) || 1);
+const botsPerShard = Math.max(1, Number.parseInt(process.env.BOTS_PER_SHARD || '1', 10) || 1);
+const restartInterval = Math.max(60, Number.parseInt(process.env.RESTART_INTERVAL || '3600', 10) || 3600) * 1000;
 
 async function startFNLB() {
-	await fnlb.start({
-		apiToken: process.env.API_TOKEN,
-		channel: releaseChannel,
-		numberOfShards: isNaN(parseInt(process.env.NUMBER_OF_SHARDS))
-			? 2
-			: parseInt(process.env.NUMBER_OF_SHARDS),
-		botsPerShard: isNaN(parseInt(process.env.BOTS_PER_SHARD))
-			? 32
-			: parseInt(process.env.BOTS_PER_SHARD),
-		categories: parseListEnv(process.env.CATEGORIES),
-		bots: parseListEnv(process.env.BOTS)
-	});
+  console.log(`Starting RAMN Lobby for ${botIds.length} selected bot(s)...`);
+  await fnlb.start({
+    apiToken: token,
+    channel: releaseChannel,
+    numberOfShards,
+    botsPerShard,
+    bots: botIds
+  });
+  console.log('FNLB cluster start requested successfully.');
 }
 
+let restarting = false;
 async function restartFNLB() {
-	console.log('Restarting FNLB...');
-
-	await fnlb.stop();
-
-	await startFNLB();
+  if (restarting) return;
+  restarting = true;
+  try {
+    console.log('Scheduled FNLB restart...');
+    await fnlb.stop();
+    await startFNLB();
+  } catch (error) {
+    console.error('FNLB restart failed:', error);
+  } finally {
+    restarting = false;
+  }
 }
+
+process.on('SIGTERM', async () => {
+  console.log('Stopping RAMN Lobby...');
+  try { await fnlb.stop(); } finally { process.exit(0); }
+});
+process.on('SIGINT', async () => {
+  console.log('Stopping RAMN Lobby...');
+  try { await fnlb.stop(); } finally { process.exit(0); }
+});
 
 await startFNLB();
-
-setInterval(
-	restartFNLB,
-	isNaN(parseInt(process.env.RESTART_INTERVAL))
-		? 3600000
-		: parseInt(process.env.RESTART_INTERVAL) * 1000
-);
+setInterval(restartFNLB, restartInterval);

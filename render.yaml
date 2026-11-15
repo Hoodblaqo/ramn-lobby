@@ -1,0 +1,25 @@
+services:
+  - type: worker
+    name: ramn-lobby-cluster
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeployTrigger: commit
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: API_TOKEN
+        sync: false
+      - key: BOTS
+        sync: false
+      - key: CLUSTER_NAME
+        value: RAMN Lobby
+      - key: NUMBER_OF_SHARDS
+        value: "1"
+      - key: BOTS_PER_SHARD
+        value: "1"
+      - key: RESTART_INTERVAL
+        value: "3600"
+      - key: RELEASE_CHANNEL
+        value: stable
