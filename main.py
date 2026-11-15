@@ -33,7 +33,7 @@ async def get_social_lists(payload: SocialRequest):
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     base = f"https://api.fnlb.net/v1/bots/{quote(bot_id, safe='')}"
     try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as client:
             friends_response, pending_response = await __import__("asyncio").gather(
                 client.get(base + "/friends", headers=headers),
                 client.get(base + "/pending", headers=headers),
@@ -149,7 +149,7 @@ async def run_bot_command(payload: CommandRequest):
         body["args"] = payload.args.strip()
     url = f"https://api.fnlb.net/v1/bots/{quote(bot_id, safe='')}/commands/run"
     try:
-        async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             response = await client.post(url, headers=headers, json=body)
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="FNLB took too long to run that command.")
