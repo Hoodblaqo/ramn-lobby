@@ -169,6 +169,78 @@ async def run_bot_command(payload: CommandRequest):
         raise HTTPException(status_code=502, detail="FNLB returned an unexpected command response.")
     return {"content": str(data.get("content") or "Command sent."), "format": int(data.get("format", 0)), "botName": str(data.get("botName") or "")}
 
+
+GITHUB_API = "https://api.github.com"
+BOT_REPO = "Hoodblaqo/ramn-lobby"
+BOT_WORKFLOW = "bot-session.yml"
+BOT_BRANCH = "dev"
+
+def github_headers():
+    token = os.environ.get("GITHUB_ACTIONS_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="Bot controls are not configured yet. The site is okay; the server is missing its private GitHub Actions token.")
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+
+async def latest_bot_run(client):
+    url = f"{GITHUB_API}/repos/{BOT_REPO}/actions/workflows/{BOT_WORKFLOW}/runs"
+    response = await client.get(url, headers=github_headers(), params={"branch": BOT_BRANCH, "per_page": 5})
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"GitHub status check failed (HTTP {response.status_code}). Check the server token permissions.")
+    data = response.json()
+    runs = data.get("workflow_runs", []) if isinstance(data, dict) else []
+    return runs[0] if runs else None
+
+@app.get("/api/session/status")
+async def bot_session_status():
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as client:
+            run = await latest_bot_run(client)
+    except HTTPException:
+        raise
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Could not reach GitHub to check the bot session.")
+    if not run:
+        return {"state": "idle", "active": False, "message": "Bot is stopped."}
+    status = str(run.get("status") or "unknown")
+    conclusion = run.get("conclusion")
+    active = status in {"queued", "in_progress", "waiting", "requested", "pending"}
+    state = status if active else (str(conclusion or status))
+    return {"state": state, "active": active, "run_id": run.get("id"), "url": run.get("html_url"), "message": ("Bot session " + state.replace("_", " ") + ".") if active else ("Last session: " + state.replace("_", " ") + ".")}
+
+@app.post("/api/session/start")
+async def start_bot_session():
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            existing = await latest_bot_run(client)
+            if existing and str(existing.get("status")) in {"queued", "in_progress", "waiting", "requested", "pending"}:
+                return {"ok": True, "active": True, "message": "A bot session is already starting or running."}
+            url = f"{GITHUB_API}/repos/{BOT_REPO}/actions/workflows/{BOT_WORKFLOW}/dispatches"
+            response = await client.post(url, headers=github_headers(), json={"ref": BOT_BRANCH})
+    except HTTPException:
+        raise
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Could not reach GitHub to start the bot.")
+    if response.status_code != 204:
+        raise HTTPException(status_code=502, detail=f"GitHub did not accept the start request (HTTP {response.status_code}).")
+    return {"ok": True, "active": True, "message": "Start request accepted. Waiting for the bot session to launch."}
+
+@app.post("/api/session/stop")
+async def stop_bot_session():
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            run = await latest_bot_run(client)
+            if not run or str(run.get("status")) not in {"queued", "in_progress", "waiting", "requested", "pending"}:
+                return {"ok": True, "active": False, "message": "There is no active bot session to stop."}
+            run_id = run.get("id")
+            response = await client.post(f"{GITHUB_API}/repos/{BOT_REPO}/actions/runs/{run_id}/cancel", headers=github_headers())
+    except HTTPException:
+        raise
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Could not reach GitHub to stop the bot.")
+    if response.status_code not in (202, 409):
+        raise HTTPException(status_code=502, detail=f"GitHub did not accept the stop request (HTTP {response.status_code}).")
+    return {"ok": True, "active": response.status_code == 202, "message": "Stop request sent." if response.status_code == 202 else "The bot session is already stopping."}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
