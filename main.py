@@ -24,16 +24,22 @@ async def list_bots(payload: ConnectRequest):
         raise HTTPException(status_code=400, detail="Enter your FNLB API token.")
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
             response = await client.get("https://api.fnlb.net/v1/bots", headers=headers)
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="FNLB took too long to respond. Try again.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Could not reach FNLB. Try again in a moment.")
-    if response.status_code in (401, 403):
-        raise HTTPException(status_code=response.status_code, detail="FNLB rejected this token or it lacks permission to read bots.")
-    if response.status_code == 429:
-        raise HTTPException(status_code=429, detail="FNLB rate limit reached. Wait a moment and try again.")
+    if response.status_code in (400, 401, 403, 429):
+        try:
+            err = response.json()
+            errors = err.get("errors", []) if isinstance(err, dict) else []
+            detail = errors[0].get("message") if errors and isinstance(errors[0], dict) else None
+        except ValueError:
+            detail = None
+        if not detail:
+            detail = {400: "FNLB rejected the request.", 401: "FNLB rejected this API token.", 403: "This token does not have permission to list bots.", 429: "FNLB rate limit reached. Wait a moment and try again."}[response.status_code]
+        raise HTTPException(status_code=response.status_code, detail=detail)
     if response.status_code >= 400:
         raise HTTPException(status_code=502, detail=f"FNLB returned HTTP {response.status_code}.")
     try:
